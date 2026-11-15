@@ -1,0 +1,16 @@
+Package: com.clock26.tweak
+Version: 1.1.0
+Architecture: iphoneos-arm64
+Maintainer: Clock26
+Installed-Size: 348
+Depends: mobilesubstrate (>= 0.9.5000), firmware (>= 16.0), preferenceloader
+Filename: debs/com.clock26.tweak_1.1.0_iphoneos-arm64.deb
+Size: 17250
+MD5sum: 9a559eea0a9ab0320540fb462580dc5b
+SHA1: 6a68483bf4a7fd770a4b6a1828d3c2dc1415d719
+SHA256: 64a344bbf30d264eab855f2c26cf976fffef0f06fa26a892209cd13de696feef
+Section: Tweaks
+Description: iOS 26 style stretchable lock screen clock for iOS 16 with Settings panel and Lock Screen Customize support.
+Author: Clock26
+Name: Clock26
+
