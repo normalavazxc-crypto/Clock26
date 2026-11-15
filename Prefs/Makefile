@@ -8,7 +8,7 @@ BUNDLE_NAME := Clock26Prefs
 
 Clock26Prefs_FILES := Clock26RootListController.m
 Clock26Prefs_FRAMEWORKS := UIKit
-Clock26Prefs_PRIVATE_FRAMEWORKS := Preferences
+Clock26Prefs_LDFLAGS := -Wl,-undefined,dynamic_lookup
 Clock26Prefs_INSTALL_PATH := /Library/PreferenceBundles
 Clock26Prefs_CFLAGS := -fobjc-arc
 
