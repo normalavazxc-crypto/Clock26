@@ -1,9 +1,12 @@
-name: Build Clock26 (.deb)
+name: Build Clock26 & APT Repo
 
 on:
   push:
     branches: [ main, master ]
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -32,3 +35,62 @@ jobs:
         with:
           name: Clock26-rootless-deb
           path: packages/*.deb
+
+      - name: Generate APT repository
+        run: |
+          mkdir -p repo/debs
+          cp packages/*.deb repo/debs/
+          cd repo
+          dpkg-scanpackages -m debs > Packages
+          gzip -c9 Packages > Packages.gz
+          bzip2 -c9 Packages > Packages.bz2
+
+          cat << 'EOF' > Release
+          Origin: Clock26 Repo
+          Label: Clock26
+          Suite: stable
+          Version: 1.0
+          Codename: ios
+          Architectures: iphoneos-arm64
+          Components: main
+          Description: iOS 26 style stretchable lock screen clock for iOS 16 (rootless)
+          EOF
+
+          cat << 'EOF' > index.html
+          <!DOCTYPE html>
+          <html lang="en">
+          <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <title>Clock26 Repo</title>
+            <style>
+              body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #0d1117; color: #f0f6fc; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; }
+              .card { background: #161b22; border: 1px solid #30363d; border-radius: 16px; padding: 28px; max-width: 360px; text-align: center; }
+              h1 { margin: 0 0 8px; font-size: 24px; }
+              p { color: #8b949e; font-size: 14px; margin: 0 0 20px; }
+              a.btn { display: block; padding: 12px 16px; border-radius: 10px; text-decoration: none; font-weight: 600; margin-bottom: 10px; }
+              .sileo { background: #2ea043; color: #fff; }
+              .zebra { background: #21262d; color: #f0f6fc; border: 1px solid #30363d; }
+            </style>
+          </head>
+          <body>
+            <div class="card">
+              <h1>Clock26 Repo</h1>
+              <p>iOS 26 style stretchable lock screen clock for iOS 16 (rootless)</p>
+              <a class="btn sileo" href="sileo://source/https://normalavazxc-crypto.github.io/Clock26/">Add to Sileo</a>
+              <a class="btn zebra" href="zbra://sources/add/https://normalavazxc-crypto.github.io/Clock26/">Add to Zebra</a>
+            </div>
+          </body>
+          </html>
+          EOF
+
+      - name: Deploy APT repo to gh-pages
+        run: |
+          cd repo
+          git init
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B gh-pages
+          git add .
+          git commit -m "Update APT repository"
+          git push -f "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" gh-pages
