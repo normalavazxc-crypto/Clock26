@@ -11,3 +11,6 @@ Clock26_CFLAGS := -fobjc-arc -Wno-unused-function
 Clock26_FRAMEWORKS := UIKit CoreGraphics QuartzCore
 
 include $(THEOS_MAKE_PATH)/tweak.mk
+
+SUBPROJECTS += Prefs
+include $(THEOS_MAKE_PATH)/aggregate.mk

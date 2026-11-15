@@ -1,16 +1,27 @@
 // Clock26/Tweak.x — iOS 16 Lock Screen stretchable clock (iOS 26 style)
+// Supports SpringBoard (Lock Screen), PosterBoard (Lock Screen Customize), and Settings live sync.
 
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
 #import <objc/runtime.h>
 
-static NSString *const kClock26ScaleKey = @"Clock26_TimeScaleY";
+static CFStringRef const kClock26PrefsDomain = CFSTR("com.clock26.tweak");
+static CFStringRef const kClock26NotifyName = CFSTR("com.clock26.tweak/PrefsChanged");
+
 static CGFloat const kMinScaleY = 1.0;
 static CGFloat const kMaxScaleY = 3.0;
 static CGFloat const kDefaultScaleY = 1.85;
 
+static BOOL gEnabled = YES;
+static BOOL gLockscreenDrag = YES;
+static CGFloat gScaleY = 1.85;
+static BOOL gIsPosterBoard = NO;
+
+// Track active time views so Darwin notifications update all live instances immediately
+static NSHashTable<UIView *> *gTrackedTimeViews = nil;
+
 // ---------------------------------------------------------------------------
-// Private CoverSheet / SpringBoardFoundation interfaces (iOS 16)
+// Private CoverSheet / PosterBoard interfaces (iOS 16)
 // ---------------------------------------------------------------------------
 
 @interface CSProminentTextView : UIView
@@ -28,24 +39,37 @@ static CGFloat const kDefaultScaleY = 1.85;
 @end
 
 // ---------------------------------------------------------------------------
-// Shared preferences & state helpers
+// Preferences & Darwin Notification Sync
 // ---------------------------------------------------------------------------
 
-static CGFloat Clock26LoadScaleY(void) {
-    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-    id val = [defaults objectForKey:kClock26ScaleKey];
-    if (!val) return kDefaultScaleY;
-    CGFloat s = [val doubleValue];
-    if (s < kMinScaleY) return kMinScaleY;
-    if (s > kMaxScaleY) return kMaxScaleY;
-    return s;
+static void Clock26LoadPrefs(void) {
+    CFPreferencesAppSynchronize(kClock26PrefsDomain);
+
+    CFPropertyListRef enabledRef = CFPreferencesCopyAppValue(CFSTR("enabled"), kClock26PrefsDomain);
+    gEnabled = enabledRef ? [(__bridge NSNumber *)enabledRef boolValue] : YES;
+    if (enabledRef) CFRelease(enabledRef);
+
+    CFPropertyListRef dragRef = CFPreferencesCopyAppValue(CFSTR("lockscreenDrag"), kClock26PrefsDomain);
+    gLockscreenDrag = dragRef ? [(__bridge NSNumber *)dragRef boolValue] : YES;
+    if (dragRef) CFRelease(dragRef);
+
+    CFPropertyListRef scaleRef = CFPreferencesCopyAppValue(CFSTR("scaleY"), kClock26PrefsDomain);
+    if (scaleRef) {
+        CGFloat s = [(__bridge NSNumber *)scaleRef doubleValue];
+        gScaleY = MAX(kMinScaleY, MIN(kMaxScaleY, s));
+        CFRelease(scaleRef);
+    } else {
+        gScaleY = kDefaultScaleY;
+    }
 }
 
 static void Clock26SaveScaleY(CGFloat scaleY) {
-    CGFloat clamped = MAX(kMinScaleY, MIN(kMaxScaleY, scaleY));
-    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-    [defaults setDouble:clamped forKey:kClock26ScaleKey];
-    [defaults synchronize];
+    gScaleY = MAX(kMinScaleY, MIN(kMaxScaleY, scaleY));
+    CFPreferencesSetAppValue(CFSTR("scaleY"), (__bridge CFPropertyListRef)@(gScaleY), kClock26PrefsDomain);
+    CFPreferencesAppSynchronize(kClock26PrefsDomain);
+    CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
+                                         kClock26NotifyName,
+                                         NULL, NULL, YES);
 }
 
 static void Clock26DisableClippingUpwards(UIView *view, NSUInteger levels) {
@@ -57,34 +81,34 @@ static void Clock26DisableClippingUpwards(UIView *view, NSUInteger levels) {
     }
 }
 
-// Applies vertical stretch anchored to the top edge of the time view so
-// digits grow downward under the date label without overlapping it.
 static void Clock26ApplyVerticalScale(UIView *timeView, CGFloat scaleY) {
     if (!timeView) return;
 
+    if (!gEnabled) {
+        timeView.transform = CGAffineTransformIdentity;
+        return;
+    }
+
     CGFloat clamped = MAX(kMinScaleY, MIN(kMaxScaleY, scaleY));
     CGFloat height = CGRectGetHeight(timeView.bounds);
-
-    // Keep top edge pinned: translate down by half the extra height.
     CGFloat translateY = (height * (clamped - 1.0)) * 0.5;
+
     CGAffineTransform scale = CGAffineTransformMakeScale(1.0, clamped);
     CGAffineTransform translate = CGAffineTransformMakeTranslation(0.0, translateY);
     timeView.transform = CGAffineTransformConcat(scale, translate);
 
-    Clock26DisableClippingUpwards(timeView, 4);
+    Clock26DisableClippingUpwards(timeView, 5);
 }
 
 // ---------------------------------------------------------------------------
-// Interactive drag handle overlay attached to CSProminentTimeView
+// Interactive drag handle overlay
 // ---------------------------------------------------------------------------
 
 @interface Clock26ResizeController : NSObject <UIGestureRecognizerDelegate>
 @property (nonatomic, weak) UIView *targetView;
 @property (nonatomic, strong) UIView *handleContainer;
-@property (nonatomic, strong) UIView *grabberPill;
 @property (nonatomic, strong) UILabel *badgeLabel;
 @property (nonatomic, assign) BOOL editing;
-@property (nonatomic, assign) CGFloat currentScaleY;
 @property (nonatomic, assign) CGFloat panStartScaleY;
 @property (nonatomic, strong) NSTimer *autoHideTimer;
 @property (nonatomic, strong) UIImpactFeedbackGenerator *haptic;
@@ -97,7 +121,6 @@ static void Clock26ApplyVerticalScale(UIView *timeView, CGFloat scaleY) {
     self = [super init];
     if (self) {
         _targetView = targetView;
-        _currentScaleY = Clock26LoadScaleY();
         _haptic = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleMedium];
         [self setupGestures];
         [self setupHandleUI];
@@ -110,20 +133,21 @@ static void Clock26ApplyVerticalScale(UIView *timeView, CGFloat scaleY) {
     if (!v) return;
     v.userInteractionEnabled = YES;
 
-    UILongPressGestureRecognizer *longPress = [[UILongPressGestureRecognizer alloc]
-        initWithTarget:self action:@selector(handleLongPress:)];
-    longPress.minimumPressDuration = 0.35;
-    longPress.delegate = self;
-    [v addGestureRecognizer:longPress];
+    if (!gIsPosterBoard) {
+        UILongPressGestureRecognizer *longPress = [[UILongPressGestureRecognizer alloc]
+            initWithTarget:self action:@selector(handleLongPress:)];
+        longPress.minimumPressDuration = 0.35;
+        longPress.delegate = self;
+        [v addGestureRecognizer:longPress];
+    }
 }
 
 - (void)setupHandleUI {
-    UIView *container = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 140, 38)];
+    UIView *container = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 148, 38)];
     container.alpha = 0.0;
     container.hidden = YES;
     container.userInteractionEnabled = YES;
 
-    // Translucent pill background
     UIVisualEffectView *blur = [[UIVisualEffectView alloc]
         initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemThinMaterialDark]];
     blur.frame = container.bounds;
@@ -132,19 +156,17 @@ static void Clock26ApplyVerticalScale(UIView *timeView, CGFloat scaleY) {
     blur.clipsToBounds = YES;
     [container addSubview:blur];
 
-    // Grabber bar
+    // Up/down arrows + grabber bar
     UIView *pill = [[UIView alloc] initWithFrame:CGRectMake(14, 16, 44, 5)];
-    pill.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.9];
+    pill.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.92];
     pill.layer.cornerRadius = 2.5;
     [container addSubview:pill];
-    self.grabberPill = pill;
 
-    // Live scale indicator
-    UILabel *badge = [[UILabel alloc] initWithFrame:CGRectMake(64, 0, 66, 38)];
+    UILabel *badge = [[UILabel alloc] initWithFrame:CGRectMake(64, 0, 72, 38)];
     badge.font = [UIFont monospacedDigitSystemFontOfSize:13 weight:UIFontWeightSemibold];
     badge.textColor = [UIColor whiteColor];
     badge.textAlignment = NSTextAlignmentCenter;
-    badge.text = [NSString stringWithFormat:@"%.2fx", self.currentScaleY];
+    badge.text = [NSString stringWithFormat:@"%.2fx", gScaleY];
     [container addSubview:badge];
     self.badgeLabel = badge;
 
@@ -175,16 +197,30 @@ static void Clock26ApplyVerticalScale(UIView *timeView, CGFloat scaleY) {
     UIView *v = self.targetView;
     if (!v || !self.handleContainer.superview) return;
 
-    // Position handle right below the stretched clock frame.
     CGRect transformedFrame = v.frame;
     CGFloat cx = CGRectGetMidX(transformedFrame);
-    CGFloat bottomY = CGRectGetMaxY(transformedFrame) + 14.0;
-    CGFloat maxY = CGRectGetHeight(self.handleContainer.superview.bounds) - 60.0;
-    if (bottomY > maxY) bottomY = maxY;
+    CGFloat bottomY = CGRectGetMaxY(transformedFrame) + 16.0;
+    CGFloat superH = CGRectGetHeight(self.handleContainer.superview.bounds);
+    if (superH > 100.0) {
+        CGFloat maxY = superH - 50.0;
+        if (bottomY > maxY) bottomY = maxY;
+    }
 
-    // Compensate for any parent transform on handle itself (keep handle 1:1).
     self.handleContainer.center = CGPointMake(cx, bottomY);
-    self.badgeLabel.text = [NSString stringWithFormat:@"%.2fx", self.currentScaleY];
+    self.badgeLabel.text = [NSString stringWithFormat:@"%.2fx", gScaleY];
+}
+
+- (void)showPersistentInCustomize {
+    if (!gEnabled) {
+        self.handleContainer.hidden = YES;
+        self.handleContainer.alpha = 0.0;
+        return;
+    }
+    [self attachHandleIfNeeded];
+    self.editing = YES;
+    self.handleContainer.hidden = NO;
+    self.handleContainer.alpha = 1.0;
+    [self.handleContainer.superview bringSubviewToFront:self.handleContainer];
 }
 
 - (void)setEditing:(BOOL)editing {
@@ -198,11 +234,13 @@ static void Clock26ApplyVerticalScale(UIView *timeView, CGFloat scaleY) {
         [UIView animateWithDuration:0.22 animations:^{
             self.handleContainer.alpha = 1.0;
         }];
-        [self resetAutoHideTimer];
+        if (!gIsPosterBoard) {
+            [self resetAutoHideTimer];
+        }
     } else {
         [self.autoHideTimer invalidate];
         self.autoHideTimer = nil;
-        Clock26SaveScaleY(self.currentScaleY);
+        Clock26SaveScaleY(gScaleY);
         [UIView animateWithDuration:0.22 animations:^{
             self.handleContainer.alpha = 0.0;
         } completion:^(BOOL finished) {
@@ -214,6 +252,7 @@ static void Clock26ApplyVerticalScale(UIView *timeView, CGFloat scaleY) {
 }
 
 - (void)resetAutoHideTimer {
+    if (gIsPosterBoard) return;
     [self.autoHideTimer invalidate];
     __weak typeof(self) weakSelf = self;
     self.autoHideTimer = [NSTimer scheduledTimerWithTimeInterval:4.5
@@ -224,6 +263,7 @@ static void Clock26ApplyVerticalScale(UIView *timeView, CGFloat scaleY) {
 }
 
 - (void)handleLongPress:(UILongPressGestureRecognizer *)gr {
+    if (!gEnabled || !gLockscreenDrag) return;
     if (gr.state == UIGestureRecognizerStateBegan) {
         [self.haptic prepare];
         [self.haptic impactOccurred];
@@ -233,12 +273,12 @@ static void Clock26ApplyVerticalScale(UIView *timeView, CGFloat scaleY) {
 
 - (void)handlePan:(UIPanGestureRecognizer *)gr {
     UIView *v = self.targetView;
-    if (!v) return;
+    if (!v || !gEnabled) return;
 
     if (gr.state == UIGestureRecognizerStateBegan) {
         [self.autoHideTimer invalidate];
         [self.haptic prepare];
-        self.panStartScaleY = self.currentScaleY;
+        self.panStartScaleY = gScaleY;
         self.snappedToDefault = NO;
     } else if (gr.state == UIGestureRecognizerStateChanged) {
         CGPoint translation = [gr translationInView:v.superview];
@@ -246,7 +286,6 @@ static void Clock26ApplyVerticalScale(UIView *timeView, CGFloat scaleY) {
         CGFloat deltaScale = translation.y / baseHeight;
         CGFloat nextScale = MAX(kMinScaleY, MIN(kMaxScaleY, self.panStartScaleY + deltaScale));
 
-        // Gentle magnetic snap at 1.0x
         if (fabs(nextScale - 1.0) < 0.04) {
             nextScale = 1.0;
             if (!self.snappedToDefault) {
@@ -257,29 +296,30 @@ static void Clock26ApplyVerticalScale(UIView *timeView, CGFloat scaleY) {
             self.snappedToDefault = NO;
         }
 
-        self.currentScaleY = nextScale;
-        Clock26ApplyVerticalScale(v, nextScale);
+        gScaleY = nextScale;
+        Clock26ApplyVerticalScale(v, gScaleY);
         [self layoutHandle];
     } else if (gr.state == UIGestureRecognizerStateEnded ||
                gr.state == UIGestureRecognizerStateCancelled) {
-        Clock26SaveScaleY(self.currentScaleY);
+        Clock26SaveScaleY(gScaleY);
         [self resetAutoHideTimer];
     }
 }
 
 - (void)handleDoubleTap:(UITapGestureRecognizer *)gr {
+    if (!gEnabled) return;
     [self.haptic impactOccurred];
-    self.currentScaleY = (fabs(self.currentScaleY - kDefaultScaleY) < 0.05) ? 1.0 : kDefaultScaleY;
+    gScaleY = (fabs(gScaleY - kDefaultScaleY) < 0.05) ? 1.0 : kDefaultScaleY;
     [UIView animateWithDuration:0.28
                           delay:0
          usingSpringWithDamping:0.82
           initialSpringVelocity:0.4
                         options:UIViewAnimationOptionBeginFromCurrentState
                      animations:^{
-        Clock26ApplyVerticalScale(self.targetView, self.currentScaleY);
+        Clock26ApplyVerticalScale(self.targetView, gScaleY);
         [self layoutHandle];
     } completion:nil];
-    Clock26SaveScaleY(self.currentScaleY);
+    Clock26SaveScaleY(gScaleY);
     [self resetAutoHideTimer];
 }
 
@@ -297,12 +337,42 @@ static Clock26ResizeController *Clock26ControllerForView(UIView *view) {
     if (!ctrl) {
         ctrl = [[Clock26ResizeController alloc] initWithTargetView:view];
         objc_setAssociatedObject(view, &kClock26ControllerKey, ctrl, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        if (!gTrackedTimeViews) {
+            gTrackedTimeViews = [NSHashTable weakObjectsHashTable];
+        }
+        [gTrackedTimeViews addObject:view];
     }
     return ctrl;
 }
 
+static void Clock26RefreshAllViews(void) {
+    Clock26LoadPrefs();
+    for (UIView *v in gTrackedTimeViews) {
+        if (!v) continue;
+        Clock26ApplyVerticalScale(v, gScaleY);
+        Clock26ResizeController *ctrl = objc_getAssociatedObject(v, &kClock26ControllerKey);
+        if (ctrl) {
+            if (gIsPosterBoard) {
+                [ctrl showPersistentInCustomize];
+            } else {
+                [ctrl layoutHandle];
+            }
+        }
+    }
+}
+
+static void Clock26PrefsChangedCallback(CFNotificationCenterRef center,
+                                        void *observer,
+                                        CFStringRef name,
+                                        const void *object,
+                                        CFDictionaryRef userInfo) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        Clock26RefreshAllViews();
+    });
+}
+
 // ---------------------------------------------------------------------------
-// Hooks: CSProminentTimeView (iOS 16 CoverSheet clock)
+// Hooks: CSProminentTimeView (SpringBoard + PosterBoard Customize)
 // ---------------------------------------------------------------------------
 
 %hook CSProminentTimeView
@@ -310,8 +380,10 @@ static Clock26ResizeController *Clock26ControllerForView(UIView *view) {
 - (void)layoutSubviews {
     %orig;
     Clock26ResizeController *ctrl = Clock26ControllerForView(self);
-    Clock26ApplyVerticalScale(self, ctrl.currentScaleY);
-    if (ctrl.editing) {
+    Clock26ApplyVerticalScale(self, gScaleY);
+    if (gIsPosterBoard) {
+        [ctrl showPersistentInCustomize];
+    } else if (ctrl.editing) {
         [ctrl layoutHandle];
     }
 }
@@ -319,9 +391,12 @@ static Clock26ResizeController *Clock26ControllerForView(UIView *view) {
 - (void)didMoveToWindow {
     %orig;
     if (self.window) {
+        Clock26LoadPrefs();
         Clock26ResizeController *ctrl = Clock26ControllerForView(self);
-        ctrl.currentScaleY = Clock26LoadScaleY();
-        Clock26ApplyVerticalScale(self, ctrl.currentScaleY);
+        Clock26ApplyVerticalScale(self, gScaleY);
+        if (gIsPosterBoard) {
+            [ctrl showPersistentInCustomize];
+        }
     }
 }
 
@@ -341,7 +416,7 @@ static Clock26ResizeController *Clock26ControllerForView(UIView *view) {
 
 %end
 
-// Ensure parent prominent display view controller never clips the stretched clock
+// Ensure parent prominent display view controller never clips and forwards handle taps
 %hook CSProminentDisplayViewController
 
 - (void)viewDidLayoutSubviews {
@@ -352,7 +427,6 @@ static Clock26ResizeController *Clock26ControllerForView(UIView *view) {
 
 %end
 
-// Fallback for devices/views still using SBFLockScreenDateView
 %hook SBFLockScreenDateView
 
 - (void)layoutSubviews {
@@ -364,6 +438,16 @@ static Clock26ResizeController *Clock26ControllerForView(UIView *view) {
 
 %ctor {
     @autoreleasepool {
+        NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier];
+        gIsPosterBoard = [bundleID isEqualToString:@"com.apple.PosterBoard"];
+
+        Clock26LoadPrefs();
+        CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
+                                        NULL,
+                                        Clock26PrefsChangedCallback,
+                                        kClock26NotifyName,
+                                        NULL,
+                                        CFNotificationSuspensionBehaviorDeliverImmediately);
         %init;
     }
 }

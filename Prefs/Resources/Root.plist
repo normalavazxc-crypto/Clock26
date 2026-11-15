@@ -1,0 +1,103 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>items</key>
+	<array>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>label</key>
+			<string>Clock26</string>
+			<key>footerText</key>
+			<string>Changes apply immediately on the Lock Screen and in Lock Screen Customize mode.</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<true/>
+			<key>defaults</key>
+			<string>com.clock26.tweak</string>
+			<key>key</key>
+			<string>enabled</string>
+			<key>label</key>
+			<string>Enable Clock26</string>
+			<key>PostNotification</key>
+			<string>com.clock26.tweak/PrefsChanged</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<true/>
+			<key>defaults</key>
+			<string>com.clock26.tweak</string>
+			<key>key</key>
+			<string>lockscreenDrag</string>
+			<key>label</key>
+			<string>Long-Press Drag on Lock Screen</string>
+			<key>PostNotification</key>
+			<string>com.clock26.tweak/PrefsChanged</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>label</key>
+			<string>Clock Height (1.00x – 3.00x)</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSSliderCell</string>
+			<key>default</key>
+			<real>1.85</real>
+			<key>defaults</key>
+			<string>com.clock26.tweak</string>
+			<key>key</key>
+			<string>scaleY</string>
+			<key>min</key>
+			<real>1.0</real>
+			<key>max</key>
+			<real>3.0</real>
+			<key>showValue</key>
+			<true/>
+			<key>isContinuous</key>
+			<true/>
+			<key>PostNotification</key>
+			<string>com.clock26.tweak/PrefsChanged</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>label</key>
+			<string>Presets &amp; Actions</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSButtonCell</string>
+			<key>label</key>
+			<string>Set iOS 26 Default (1.85x)</string>
+			<key>action</key>
+			<string>resetToDefault</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSButtonCell</string>
+			<key>label</key>
+			<string>Reset to Normal (1.00x)</string>
+			<key>action</key>
+			<string>resetToNormal</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSButtonCell</string>
+			<key>label</key>
+			<string>Respring</string>
+			<key>action</key>
+			<string>respring</string>
+		</dict>
+	</array>
+	<key>title</key>
+	<string>Clock26</string>
+</dict>
+</plist>
